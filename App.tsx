@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Eye, Sparkles, Zap, Database, Scan, ChevronUp, Activity, Microscope, Save, RotateCcw } from 'lucide-react';
+import { Eye, Sparkles, Zap, Database, Scan, ChevronUp, Activity, Microscope, RotateCcw, AlertTriangle, X, Check } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { INITIAL_RESOURCES, MAX_FOCUS_BASE, FOCUS_REGEN_BASE, UPGRADES, BASE_GAZE_COOLDOWN_MS, SAVE_KEY } from './constants';
 import { GameResources, CelestialBody, CelestialType, Upgrade, LogEntry, Constellation } from './types';
@@ -18,6 +18,7 @@ const App: React.FC = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   
   // Gaze Mechanics State
   const [isGazing, setIsGazing] = useState(false);
@@ -35,16 +36,17 @@ const App: React.FC = () => {
           if (parsed.resources) setResources(parsed.resources);
           if (parsed.stars) setStars(parsed.stars);
           if (parsed.constellations) setConstellations(parsed.constellations);
-          if (parsed.upgrades) setUpgrades(parsed.upgrades);
           if (parsed.logs) setLogs(parsed.logs);
           
-          setUpgrades(currentDefaults => {
+          // FIX: Do NOT blindly set parsed upgrades as they lack functions.
+          // Map saved levels onto the fresh UPGRADES constants.
+          if (parsed.upgrades) {
              const savedUpgrades = parsed.upgrades as Upgrade[];
-             return currentDefaults.map(def => {
+             setUpgrades(UPGRADES.map(def => {
                  const saved = savedUpgrades.find(s => s.id === def.id);
                  return saved ? { ...def, level: saved.level } : def;
-             });
-          });
+             }));
+          }
         } catch (e) {
           console.error("Failed to load save", e);
         }
@@ -57,7 +59,7 @@ const App: React.FC = () => {
   // Auto-Save
   useEffect(() => {
     if (!isLoaded) return;
-    const saveTimer = setInterval(() => {
+    const saveTimer = window.setInterval(() => {
         const stateToSave = {
             resources,
             stars,
@@ -67,27 +69,27 @@ const App: React.FC = () => {
         };
         localStorage.setItem(SAVE_KEY, JSON.stringify(stateToSave));
     }, 2000);
-    return () => clearInterval(saveTimer);
+    return () => window.clearInterval(saveTimer);
   }, [isLoaded, resources, stars, constellations, upgrades, logs]);
 
-  const resetGame = () => {
-      if (confirm("Are you sure you want to reset the universe? All progress will be lost.")) {
-          localStorage.removeItem(SAVE_KEY);
-          setResources(INITIAL_RESOURCES);
-          setStars([]);
-          setConstellations([]);
-          setUpgrades(UPGRADES);
-          setLogs([]);
-          setSelectedStar(null);
-          setIsScanning(false);
-          setIsAnalyzing(false);
-      }
+  const performReset = () => {
+      localStorage.removeItem(SAVE_KEY);
+      setResources(INITIAL_RESOURCES);
+      setStars([]);
+      setConstellations([]);
+      setUpgrades(UPGRADES);
+      setLogs([]);
+      setSelectedStar(null);
+      setIsScanning(false);
+      setIsAnalyzing(false);
+      setShowResetConfirm(false);
+      addLog("Universe Reset. Welcome back, Observer.", "warning");
   };
 
   // --- Game Loop & Passive Gen ---
   useEffect(() => {
     if (!isLoaded) return;
-    const interval = setInterval(() => {
+    const interval = window.setInterval(() => {
       setResources(prev => {
         const maxFocus = MAX_FOCUS_BASE + (upgrades.find(u => u.id === 'focus_condenser')?.level || 0) * 50;
         const focusRegen = FOCUS_REGEN_BASE + (upgrades.find(u => u.id === 'stabilizers')?.level || 0);
@@ -101,7 +103,7 @@ const App: React.FC = () => {
       });
     }, 1000);
 
-    return () => clearInterval(interval);
+    return () => window.clearInterval(interval);
   }, [upgrades, isLoaded]);
 
   // --- Constellation Logic ---
@@ -228,7 +230,7 @@ const App: React.FC = () => {
           checkForConstellations(stars, constellations);
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stars.length]); // Only check when count changes to avoid loop with constellations state
+  }, [stars.length]); 
 
 
   // --- Helpers ---
@@ -273,13 +275,13 @@ const App: React.FC = () => {
       gazeIntervalRef.current = window.setInterval(triggerGaze, cooldown);
     } else {
       if (gazeIntervalRef.current) {
-        clearInterval(gazeIntervalRef.current);
+        window.clearInterval(gazeIntervalRef.current);
         gazeIntervalRef.current = null;
       }
     }
     return () => {
       if (gazeIntervalRef.current) {
-        clearInterval(gazeIntervalRef.current);
+        window.clearInterval(gazeIntervalRef.current);
       }
     };
   }, [isGazing, triggerGaze, getGazeCooldown]);
@@ -394,7 +396,40 @@ const App: React.FC = () => {
   if (!isLoaded) return <div className="h-screen bg-space-950 text-white flex items-center justify-center">Initializing Observatory...</div>;
 
   return (
-    <div className="flex flex-col h-screen bg-space-950 text-slate-200 font-sans selection:bg-cyan-500 selection:text-space-950">
+    <div className="flex flex-col h-screen bg-space-950 text-slate-200 font-sans selection:bg-cyan-500 selection:text-space-950 relative">
+      
+      {/* Reset Modal */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-space-900 border border-red-900/50 rounded-lg shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95 duration-200">
+                <div className="flex items-center space-x-3 text-red-400 mb-4">
+                    <AlertTriangle className="w-8 h-8" />
+                    <h3 className="text-xl font-bold">Reset Universe?</h3>
+                </div>
+                <p className="text-slate-300 mb-6 leading-relaxed">
+                    Are you sure you want to destroy the current universe and start over? <br/><br/>
+                    <span className="text-red-400/80 text-sm">Warning: All discoveries, upgrades, and collected data will be lost forever.</span>
+                </p>
+                <div className="flex justify-end space-x-3">
+                    <button 
+                        onClick={() => setShowResetConfirm(false)}
+                        className="px-4 py-2 rounded bg-space-800 hover:bg-space-700 text-slate-300 font-bold transition-colors flex items-center"
+                    >
+                        <X className="w-4 h-4 mr-2" />
+                        Cancel
+                    </button>
+                    <button 
+                        onClick={performReset}
+                        className="px-4 py-2 rounded bg-red-900/80 hover:bg-red-800 text-red-100 font-bold transition-colors flex items-center"
+                    >
+                        <Check className="w-4 h-4 mr-2" />
+                        Confirm Reset
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
+
       <header className="flex items-center justify-between px-6 py-4 bg-space-900 border-b border-space-800 shadow-md z-10">
         <div className="flex items-center space-x-3">
           <div className="p-2 bg-indigo-600 rounded-full animate-pulse-slow">
@@ -430,8 +465,12 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="flex items-center border-l border-space-800 pl-4 ml-4">
-            <button onClick={resetGame} className="p-1 hover:bg-red-900/30 rounded text-slate-600 hover:text-red-400 transition-colors" title="Reset Universe">
-                <RotateCcw className="w-4 h-4" />
+            <button 
+                onClick={() => setShowResetConfirm(true)} 
+                className="p-2 hover:bg-red-900/30 rounded text-slate-500 hover:text-red-400 transition-colors" 
+                title="Reset Universe"
+            >
+                <RotateCcw className="w-5 h-5" />
             </button>
           </div>
         </div>

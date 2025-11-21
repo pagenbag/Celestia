@@ -52,9 +52,9 @@ const StarMap: React.FC<StarMapProps> = React.memo(({ stars, constellations, onS
         starMerge.append("feMergeNode").attr("in", "coloredBlur");
         starMerge.append("feMergeNode").attr("in", "SourceGraphic");
 
-        // Constellation Line Glow
+        // Constellation Line Glow (Enhanced)
         const lineFilter = defs.append("filter").attr("id", "line-glow");
-        lineFilter.append("feGaussianBlur").attr("stdDeviation", "1.5").attr("result", "blur");
+        lineFilter.append("feGaussianBlur").attr("stdDeviation", "2").attr("result", "blur");
         const lineMerge = lineFilter.append("feMerge");
         lineMerge.append("feMergeNode").attr("in", "blur");
         lineMerge.append("feMergeNode").attr("in", "SourceGraphic");
@@ -179,14 +179,15 @@ const StarMap: React.FC<StarMapProps> = React.memo(({ stars, constellations, onS
         .style("pointer-events", "none")
         .attr("opacity", 0)
         .merge(linkSelection as any) // Update
+        .classed("charted", (d: any) => d.isCharted) // Apply class for CSS animation
         .transition().duration(500)
         .attr("x1", d => xScale(d.x1))
         .attr("y1", d => yScale(d.y1))
         .attr("x2", d => xScale(d.x2))
         .attr("y2", d => yScale(d.y2))
-        .attr("stroke", d => d.isCharted ? "#fbbf24" : "#cbd5e1") // Gold for charted, slate for raw
+        .attr("stroke", d => d.isCharted ? "#fbbf24" : "#cbd5e1") 
         .attr("stroke-width", d => d.isCharted ? 1.5 : 0.5)
-        .attr("opacity", d => d.isCharted ? 0.6 : d.opacity * 0.15)
+        .attr("opacity", d => d.isCharted ? 0.8 : d.opacity * 0.15)
         .attr("filter", d => d.isCharted ? "url(#line-glow)" : "none");
 
     linkSelection.exit().remove();
@@ -415,6 +416,16 @@ const StarMap: React.FC<StarMapProps> = React.memo(({ stars, constellations, onS
 
   return (
     <div ref={containerRef} className="w-full h-full bg-space-950 overflow-hidden relative rounded-lg border border-space-800">
+      <style>{`
+        @keyframes constellation-pulse {
+            0% { stroke-opacity: 0.5; stroke-width: 1px; }
+            50% { stroke-opacity: 1; stroke-width: 2px; }
+            100% { stroke-opacity: 0.5; stroke-width: 1px; }
+        }
+        .constellation-line.charted {
+            animation: constellation-pulse 3s ease-in-out infinite;
+        }
+      `}</style>
       <svg ref={svgRef} width={dimensions.width} height={dimensions.height} className="absolute top-0 left-0 w-full h-full" />
       
       {/* Lens Effects Layer */}
