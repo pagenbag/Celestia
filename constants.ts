@@ -10,6 +10,7 @@ export const MAX_FOCUS_BASE = 100;
 export const FOCUS_REGEN_BASE = 1; // per tick
 export const STARLIGHT_PASSIVE_BASE = 0;
 export const BASE_GAZE_COOLDOWN_MS = 800; // Milliseconds between clicks allowed
+export const SAVE_KEY = 'celestia_save_v1';
 
 export const UPGRADES: Upgrade[] = [
   {

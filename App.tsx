@@ -1,20 +1,23 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Eye, Sparkles, Zap, Database, Scan, ChevronUp, Activity, Microscope } from 'lucide-react';
+import { Eye, Sparkles, Zap, Database, Scan, ChevronUp, Activity, Microscope, Save, RotateCcw } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
-import { INITIAL_RESOURCES, MAX_FOCUS_BASE, FOCUS_REGEN_BASE, UPGRADES, BASE_GAZE_COOLDOWN_MS } from './constants';
-import { GameResources, CelestialBody, CelestialType, Upgrade, LogEntry } from './types';
-import { generateCelestialDiscovery, analyzeCelestialBody } from './services/gemini';
+import { INITIAL_RESOURCES, MAX_FOCUS_BASE, FOCUS_REGEN_BASE, UPGRADES, BASE_GAZE_COOLDOWN_MS, SAVE_KEY } from './constants';
+import { GameResources, CelestialBody, CelestialType, Upgrade, LogEntry, Constellation } from './types';
+import { generateCelestialDiscovery, analyzeCelestialBody, generateConstellationName } from './services/gemini';
 import StarMap from './components/StarMap';
 
 const App: React.FC = () => {
   // State
   const [resources, setResources] = useState<GameResources>(INITIAL_RESOURCES);
   const [stars, setStars] = useState<CelestialBody[]>([]);
+  const [constellations, setConstellations] = useState<Constellation[]>([]);
   const [selectedStar, setSelectedStar] = useState<CelestialBody | null>(null);
   const [upgrades, setUpgrades] = useState<Upgrade[]>(UPGRADES);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  
   const [isScanning, setIsScanning] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
   
   // Gaze Mechanics State
   const [isGazing, setIsGazing] = useState(false);
@@ -22,15 +25,71 @@ const App: React.FC = () => {
   const gazeIntervalRef = useRef<number | null>(null);
   const gazeButtonRef = useRef<HTMLButtonElement>(null);
 
-  // Audio Refs (Mocking audio for specific events if we added them)
-  // const audioContext = useRef<AudioContext | null>(null);
+  // --- Persistence ---
+  useEffect(() => {
+    const loadGame = () => {
+      const savedData = localStorage.getItem(SAVE_KEY);
+      if (savedData) {
+        try {
+          const parsed = JSON.parse(savedData);
+          if (parsed.resources) setResources(parsed.resources);
+          if (parsed.stars) setStars(parsed.stars);
+          if (parsed.constellations) setConstellations(parsed.constellations);
+          if (parsed.upgrades) setUpgrades(parsed.upgrades);
+          if (parsed.logs) setLogs(parsed.logs);
+          
+          setUpgrades(currentDefaults => {
+             const savedUpgrades = parsed.upgrades as Upgrade[];
+             return currentDefaults.map(def => {
+                 const saved = savedUpgrades.find(s => s.id === def.id);
+                 return saved ? { ...def, level: saved.level } : def;
+             });
+          });
+        } catch (e) {
+          console.error("Failed to load save", e);
+        }
+      }
+      setIsLoaded(true);
+    };
+    loadGame();
+  }, []);
+
+  // Auto-Save
+  useEffect(() => {
+    if (!isLoaded) return;
+    const saveTimer = setInterval(() => {
+        const stateToSave = {
+            resources,
+            stars,
+            constellations,
+            upgrades,
+            logs: logs.slice(0, 20)
+        };
+        localStorage.setItem(SAVE_KEY, JSON.stringify(stateToSave));
+    }, 2000);
+    return () => clearInterval(saveTimer);
+  }, [isLoaded, resources, stars, constellations, upgrades, logs]);
+
+  const resetGame = () => {
+      if (confirm("Are you sure you want to reset the universe? All progress will be lost.")) {
+          localStorage.removeItem(SAVE_KEY);
+          setResources(INITIAL_RESOURCES);
+          setStars([]);
+          setConstellations([]);
+          setUpgrades(UPGRADES);
+          setLogs([]);
+          setSelectedStar(null);
+          setIsScanning(false);
+          setIsAnalyzing(false);
+      }
+  };
 
   // --- Game Loop & Passive Gen ---
   useEffect(() => {
+    if (!isLoaded) return;
     const interval = setInterval(() => {
       setResources(prev => {
         const maxFocus = MAX_FOCUS_BASE + (upgrades.find(u => u.id === 'focus_condenser')?.level || 0) * 50;
-        // Base regen + stabilizer bonus
         const focusRegen = FOCUS_REGEN_BASE + (upgrades.find(u => u.id === 'stabilizers')?.level || 0);
         const passiveStarlight = (upgrades.find(u => u.id === 'sensor_array')?.level || 0) * 0.5;
 
@@ -43,7 +102,134 @@ const App: React.FC = () => {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [upgrades]);
+  }, [upgrades, isLoaded]);
+
+  // --- Constellation Logic ---
+  const checkForConstellations = useCallback(async (currentStars: CelestialBody[], currentConstellations: Constellation[]) => {
+      if (currentStars.length < 3) return;
+
+      // 1. Build Adjacency Graph
+      const adj = new Map<string, string[]>();
+      currentStars.forEach(s => adj.set(s.id, []));
+      const MAX_DIST = 180;
+
+      for (let i = 0; i < currentStars.length; i++) {
+          for (let j = i + 1; j < currentStars.length; j++) {
+              const s1 = currentStars[i];
+              const s2 = currentStars[j];
+              const dist = Math.hypot(s1.coordinates.x - s2.coordinates.x, s1.coordinates.y - s2.coordinates.y);
+              if (dist < MAX_DIST) {
+                  adj.get(s1.id)?.push(s2.id);
+                  adj.get(s2.id)?.push(s1.id);
+              }
+          }
+      }
+
+      // 2. Find Connected Components (Clusters)
+      const visited = new Set<string>();
+      const clusters: string[][] = [];
+
+      for (const star of currentStars) {
+          if (!visited.has(star.id)) {
+              const cluster: string[] = [];
+              const stack = [star.id];
+              visited.add(star.id);
+              
+              while (stack.length > 0) {
+                  const currentId = stack.pop()!;
+                  cluster.push(currentId);
+                  const neighbors = adj.get(currentId) || [];
+                  for (const neighborId of neighbors) {
+                      if (!visited.has(neighborId)) {
+                          visited.add(neighborId);
+                          stack.push(neighborId);
+                      }
+                  }
+              }
+              if (cluster.length >= 3) {
+                  clusters.push(cluster);
+              }
+          }
+      }
+
+      // 3. Merge with Existing Constellations or Create New
+      let updatedConstellations = [...currentConstellations];
+      let hasChanges = false;
+
+      for (const cluster of clusters) {
+          // Check if this cluster overlaps with any existing constellation
+          const overlaps = updatedConstellations.filter(c => 
+              c.starIds.some(id => cluster.includes(id))
+          );
+
+          if (overlaps.length === 0) {
+              // NEW Constellation found!
+              const name = await generateConstellationName(cluster.length);
+              const newConstellation: Constellation = {
+                  id: uuidv4(),
+                  name,
+                  starIds: cluster,
+                  discoveredAt: Date.now()
+              };
+              
+              updatedConstellations.push(newConstellation);
+              hasChanges = true;
+              
+              // Reward
+              const rewardStarlight = 50 + (cluster.length * 10);
+              const rewardData = 20 + (cluster.length * 5);
+              setResources(prev => ({
+                  ...prev,
+                  starlight: prev.starlight + rewardStarlight,
+                  data: prev.data + rewardData
+              }));
+              addLog(`Constellation Charted: ${name}! (+${rewardStarlight} Light, +${rewardData} Data)`, 'constellation');
+
+          } else {
+              // Existing constellation(s) found. 
+              // If multiple overlaps, we conceptually merge them into the first one.
+              // If single overlap, we update it if size changed.
+              
+              const primaryC = overlaps[0];
+              
+              // Check if we have new stars in this cluster that aren't in the primaryC
+              const currentSet = new Set(primaryC.starIds);
+              const hasNewStars = cluster.some(id => !currentSet.has(id));
+              
+              if (hasNewStars || overlaps.length > 1) {
+                  // Merge all stars from cluster and overlaps into primaryC
+                  const mergedIds = new Set([...primaryC.starIds, ...cluster]);
+                  
+                  // If we are merging multiple old constellations, consume their stars too
+                  for (let i = 1; i < overlaps.length; i++) {
+                      overlaps[i].starIds.forEach(id => mergedIds.add(id));
+                      // Remove the obsolete constellation
+                      updatedConstellations = updatedConstellations.filter(c => c.id !== overlaps[i].id);
+                  }
+
+                  // Update primary
+                  updatedConstellations = updatedConstellations.map(c => 
+                      c.id === primaryC.id ? { ...c, starIds: Array.from(mergedIds) } : c
+                  );
+                  hasChanges = true;
+              }
+          }
+      }
+
+      if (hasChanges) {
+          setConstellations(updatedConstellations);
+      }
+
+  }, []);
+
+  // Trigger constellation check when stars change
+  useEffect(() => {
+      if (isLoaded && stars.length > 0) {
+          checkForConstellations(stars, constellations);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stars.length]); // Only check when count changes to avoid loop with constellations state
+
 
   // --- Helpers ---
   const addLog = (message: string, type: LogEntry['type'] = 'info') => {
@@ -53,7 +239,6 @@ const App: React.FC = () => {
   // --- Gaze / Observation Mechanics ---
   const getGazeCooldown = useCallback(() => {
     const servoLevel = upgrades.find(u => u.id === 'optical_servos')?.level || 0;
-    // Geometric reduction: Each level reduces cooldown by 10%. Min 50ms.
     return Math.max(50, BASE_GAZE_COOLDOWN_MS * Math.pow(0.9, servoLevel));
   }, [upgrades]);
 
@@ -61,7 +246,6 @@ const App: React.FC = () => {
     const now = Date.now();
     const cooldown = getGazeCooldown();
 
-    // Anti-cheat / Throttle check
     if (now - lastGazeTimeRef.current < cooldown) return;
 
     lastGazeTimeRef.current = now;
@@ -70,13 +254,11 @@ const App: React.FC = () => {
     const gain = 1 + lensLevel;
     setResources(prev => ({ ...prev, starlight: prev.starlight + gain }));
 
-    // Trigger CSS animation restart
     if (gazeButtonRef.current) {
         const bar = gazeButtonRef.current.querySelector('.cooldown-bar') as HTMLElement;
         if (bar) {
             bar.style.transition = 'none';
             bar.style.width = '0%';
-            // Force reflow
             void bar.offsetWidth; 
             bar.style.transition = `width ${cooldown}ms linear`;
             bar.style.width = '100%';
@@ -84,12 +266,9 @@ const App: React.FC = () => {
     }
   }, [upgrades, getGazeCooldown]);
 
-  // Handle holding down the button
   useEffect(() => {
     if (isGazing) {
-      // Trigger immediately on press
       triggerGaze();
-      
       const cooldown = getGazeCooldown();
       gazeIntervalRef.current = window.setInterval(triggerGaze, cooldown);
     } else {
@@ -98,7 +277,6 @@ const App: React.FC = () => {
         gazeIntervalRef.current = null;
       }
     }
-
     return () => {
       if (gazeIntervalRef.current) {
         clearInterval(gazeIntervalRef.current);
@@ -109,45 +287,33 @@ const App: React.FC = () => {
 
   // --- Actions ---
   const calculateScanCost = () => {
-    // Scanning gets harder the further you go (more stars found)
     const depth = stars.length;
     const baseFocusCost = 20;
     const baseLightCost = 10;
-    
     const focusCost = baseFocusCost + Math.floor(depth * 1.5);
     const lightCost = baseLightCost + Math.floor(depth * 0.5);
-    
     return { focusCost, lightCost };
   };
 
   const handleScan = async () => {
     const { focusCost, lightCost } = calculateScanCost();
-    
     if (resources.focus < focusCost || resources.starlight < lightCost || isScanning) return;
 
     setIsScanning(true);
     setResources(prev => ({ ...prev, focus: prev.focus - focusCost, starlight: prev.starlight - lightCost }));
     
     const depth = stars.length;
-    // Base time 1s + 200ms per existing star
     const baseTime = 1000;
     const penalty = depth * 200;
     const scanMatrixLevel = upgrades.find(u => u.id === 'scan_matrix')?.level || 0;
-    const reduction = Math.min(0.75, scanMatrixLevel * 0.15); // Cap at 75% reduction
+    const reduction = Math.min(0.75, scanMatrixLevel * 0.15); 
     const totalTime = Math.max(500, (baseTime + penalty) * (1 - reduction));
 
     addLog(`Scanning sector (ETA: ${(totalTime/1000).toFixed(1)}s)...`, "info");
 
     try {
-      // Simulate deep space transmission delay
       await new Promise(resolve => setTimeout(resolve, totalTime));
-
-      // Generate random coordinates for the new star
-      const coords = {
-        x: Math.random() * 1000,
-        y: Math.random() * 1000
-      };
-
+      const coords = { x: Math.random() * 1000, y: Math.random() * 1000 };
       const data = await generateCelestialDiscovery(coords, stars.length);
       
       const newBody: CelestialBody = {
@@ -166,7 +332,7 @@ const App: React.FC = () => {
 
       setStars(prev => [...prev, newBody]);
       addLog(`Discovery: ${newBody.name} (${newBody.type})`, "discovery");
-      setResources(prev => ({ ...prev, data: prev.data + 5 })); // Bonus data for discovery
+      setResources(prev => ({ ...prev, data: prev.data + 5 })); 
     } catch (err) {
       addLog("Scan failed: Interference detected.", "warning");
     } finally {
@@ -177,9 +343,8 @@ const App: React.FC = () => {
   const handleAnalyze = async () => {
     if (!selectedStar || selectedStar.analyzed || isAnalyzing) return;
     
-    // Cost calculation
     const processorLevel = upgrades.find(u => u.id === 'quantum_processor')?.level || 0;
-    const discount = Math.min(0.5, processorLevel * 0.1); // Max 50% discount
+    const discount = Math.min(0.5, processorLevel * 0.1); 
     const cost = Math.floor(50 * (1 - discount));
 
     if (resources.data < cost) {
@@ -193,16 +358,12 @@ const App: React.FC = () => {
 
     try {
         const detailedAnalysis = await analyzeCelestialBody(selectedStar);
-        
         setStars(prev => prev.map(s => 
             s.id === selectedStar.id 
             ? { ...s, description: s.description + "\n\nAnalysis: " + detailedAnalysis, analyzed: true } 
             : s
         ));
-        
-        // Update the selected star view immediately
         setSelectedStar(prev => prev ? { ...prev, description: prev.description + "\n\nAnalysis: " + detailedAnalysis, analyzed: true } : null);
-        
         addLog(`Analysis complete for ${selectedStar.name}.`, "discovery");
     } catch (err) {
         addLog("Analysis failed.", "warning");
@@ -214,7 +375,6 @@ const App: React.FC = () => {
   const buyUpgrade = (upgradeId: string) => {
     const upgradeIndex = upgrades.findIndex(u => u.id === upgradeId);
     if (upgradeIndex === -1) return;
-
     const upgrade = upgrades[upgradeIndex];
     const cost = Math.floor(upgrade.baseCost * Math.pow(upgrade.costMultiplier, upgrade.level));
 
@@ -227,39 +387,39 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Render Helpers ---
   const getUpgradeCost = (u: Upgrade) => Math.floor(u.baseCost * Math.pow(u.costMultiplier, u.level));
   const { focusCost, lightCost } = calculateScanCost();
   const canScan = resources.focus >= focusCost && resources.starlight >= lightCost && !isScanning;
 
+  if (!isLoaded) return <div className="h-screen bg-space-950 text-white flex items-center justify-center">Initializing Observatory...</div>;
+
   return (
     <div className="flex flex-col h-screen bg-space-950 text-slate-200 font-sans selection:bg-cyan-500 selection:text-space-950">
-      {/* Header / Resources */}
       <header className="flex items-center justify-between px-6 py-4 bg-space-900 border-b border-space-800 shadow-md z-10">
         <div className="flex items-center space-x-3">
           <div className="p-2 bg-indigo-600 rounded-full animate-pulse-slow">
              <Eye className="w-6 h-6 text-white" />
           </div>
-          <h1 className="text-xl font-bold tracking-widest uppercase text-indigo-300">Celestia</h1>
+          <h1 className="text-xl font-bold tracking-widest uppercase text-indigo-300 hidden md:block">Celestia</h1>
         </div>
 
-        <div className="flex space-x-8">
+        <div className="flex space-x-4 md:space-x-8">
           <div className="flex items-center space-x-2" title="Starlight">
             <Sparkles className="w-5 h-5 text-starlight animate-twinkle" />
             <span className="text-lg font-mono font-bold text-starlight">{Math.floor(resources.starlight).toLocaleString()}</span>
-            <span className="text-xs text-slate-500 uppercase">Lummens</span>
+            <span className="text-xs text-slate-500 uppercase hidden sm:inline">Lummens</span>
           </div>
           <div className="flex items-center space-x-2" title="Data">
             <Database className="w-5 h-5 text-data" />
             <span className="text-lg font-mono font-bold text-data">{Math.floor(resources.data).toLocaleString()}</span>
-            <span className="text-xs text-slate-500 uppercase">Bytes</span>
+            <span className="text-xs text-slate-500 uppercase hidden sm:inline">Bytes</span>
           </div>
           <div className="flex items-center space-x-2" title="Focus">
             <Zap className="w-5 h-5 text-rose-400" />
-            <div className="flex flex-col w-32">
+            <div className="flex flex-col w-24 md:w-32">
                 <div className="flex justify-between text-xs text-rose-300 mb-1">
                     <span>Focus</span>
-                    <span>{Math.floor(resources.focus)} / {MAX_FOCUS_BASE + (upgrades.find(u => u.id === 'focus_condenser')?.level || 0) * 50}</span>
+                    <span>{Math.floor(resources.focus)}</span>
                 </div>
                 <div className="w-full h-2 bg-space-800 rounded-full overflow-hidden">
                     <div 
@@ -269,14 +429,16 @@ const App: React.FC = () => {
                 </div>
             </div>
           </div>
+          <div className="flex items-center border-l border-space-800 pl-4 ml-4">
+            <button onClick={resetGame} className="p-1 hover:bg-red-900/30 rounded text-slate-600 hover:text-red-400 transition-colors" title="Reset Universe">
+                <RotateCcw className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="flex flex-1 overflow-hidden">
-        {/* Left Sidebar: Controls & Upgrades */}
-        <aside className="w-80 bg-space-900 border-r border-space-800 flex flex-col overflow-hidden z-20 shadow-xl">
-          
-          {/* Action Section */}
+        <aside className="w-80 bg-space-900 border-r border-space-800 flex flex-col overflow-hidden z-20 shadow-xl shrink-0">
           <div className="p-4 border-b border-space-800">
             <button 
               ref={gazeButtonRef}
@@ -287,9 +449,7 @@ const App: React.FC = () => {
               onTouchEnd={() => setIsGazing(false)}
               className="relative w-full py-4 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-lg font-bold shadow-lg shadow-indigo-900/50 transition-all transform active:scale-[0.98] flex items-center justify-center space-x-2 mb-4 overflow-hidden group select-none"
             >
-               {/* Progress Bar Background */}
               <div className="absolute top-0 left-0 h-full bg-white/20 cooldown-bar w-full pointer-events-none origin-left" style={{ width: '100%' }}></div>
-              
               <div className="relative z-10 flex items-center space-x-2">
                 <Eye className={`w-5 h-5 ${isGazing ? 'animate-pulse' : ''}`} />
                 <span>Gaze at the Void</span>
@@ -307,11 +467,13 @@ const App: React.FC = () => {
               }`}
             >
               {isScanning ? <Activity className="w-5 h-5 animate-spin" /> : <Scan className="w-5 h-5" />}
-              <span>{isScanning ? 'Scanning...' : `Deep Scan (-${focusCost} F, -${lightCost} L)`}</span>
+              <span>{isScanning ? 'Scanning...' : `Deep Scan`}</span>
             </button>
+             <div className="flex justify-between text-[10px] text-slate-500 mt-1 px-1">
+                <span>Cost: {focusCost} Focus, {lightCost} Light</span>
+            </div>
           </div>
 
-          {/* Upgrades List */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             <h2 className="text-xs font-bold uppercase text-slate-500 tracking-widest mb-2">Equipment Upgrades</h2>
             {upgrades.map(u => {
@@ -349,26 +511,26 @@ const App: React.FC = () => {
           </div>
         </aside>
 
-        {/* Center: Star Map */}
-        <section className="flex-1 relative bg-black">
+        <section className="flex-1 relative bg-black overflow-hidden">
             <StarMap 
                 stars={stars} 
+                constellations={constellations}
                 onSelectStar={setSelectedStar} 
                 selectedStarId={selectedStar?.id || null} 
             />
             
-            {/* Overlay Stats */}
             <div className="absolute top-4 left-4 pointer-events-none">
                  <div className="text-xs text-slate-400 uppercase tracking-widest mb-1">Known Universe</div>
                  <div className="text-4xl font-thin text-white">{stars.length} <span className="text-base font-normal text-slate-500">Bodies Discovered</span></div>
+                 <div className="text-xl font-thin text-indigo-300 mt-1">{constellations.length} <span className="text-xs font-normal text-slate-500">Constellations Charted</span></div>
             </div>
 
-            {/* Log Feed Overlay */}
             <div className="absolute bottom-0 left-0 w-full h-48 bg-gradient-to-t from-space-950 via-space-950/90 to-transparent pointer-events-none flex flex-col justify-end p-6">
                  <div className="space-y-1 overflow-hidden flex flex-col-reverse h-32 mask-linear-fade">
                     {logs.map(log => (
                         <div key={log.id} className={`text-sm animate-in fade-in slide-in-from-bottom-2 duration-300 flex items-center space-x-2 ${
                             log.type === 'discovery' ? 'text-cyan-300' : 
+                            log.type === 'constellation' ? 'text-amber-300 font-bold' :
                             log.type === 'warning' ? 'text-red-400' :
                             log.type === 'upgrade' ? 'text-starlight' : 'text-slate-400'
                         }`}>
@@ -380,9 +542,8 @@ const App: React.FC = () => {
             </div>
         </section>
 
-        {/* Right Sidebar: Details Panel */}
         {selectedStar ? (
-             <aside className="w-96 bg-space-900/95 backdrop-blur-md border-l border-space-800 p-6 flex flex-col z-20 shadow-2xl animate-in slide-in-from-right duration-300">
+             <aside className="w-96 bg-space-900/95 backdrop-blur-md border-l border-space-800 p-6 flex flex-col z-20 shadow-2xl animate-in slide-in-from-right duration-300 absolute right-0 h-full md:static">
                 <div className="flex justify-between items-start mb-6">
                      <div>
                         <div className="text-xs text-slate-500 uppercase tracking-widest mb-1">{selectedStar.type}</div>
@@ -394,7 +555,6 @@ const App: React.FC = () => {
                 </div>
 
                 <div className="space-y-6 flex-1 overflow-y-auto pr-2">
-                    {/* Visual Representation */}
                     <div className="w-full aspect-square rounded-full mx-auto relative shadow-2xl shadow-black/50 border border-white/10"
                          style={{ 
                              background: selectedStar.type === CelestialType.BLACK_HOLE 
@@ -403,7 +563,6 @@ const App: React.FC = () => {
                              boxShadow: `0 0 40px ${selectedStar.color}40`
                          }}
                     >
-                        {/* Atmosphere/Nebula effect overlay */}
                         <div className="absolute inset-0 rounded-full opacity-50 mix-blend-screen bg-[url('https://www.transparenttextures.com/patterns/stardust.png')]"></div>
                     </div>
 
@@ -440,4 +599,20 @@ const App: React.FC = () => {
                                     : 'border-indigo-500/50 bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600 hover:text-white'
                             }`}
                         >
-                            {isAnalyzing ? <Activity className="w-4 h-4 animate-spin"/> : selectedStar.analyzed ?
+                            {isAnalyzing ? <Activity className="w-4 h-4 animate-spin"/> : selectedStar.analyzed ? <Database className="w-4 h-4" /> : <Microscope className="w-4 h-4" />}
+                            <span>
+                                {isAnalyzing ? 'Processing...' : selectedStar.analyzed ? 'Analysis Complete' : 'Deep Analysis (50 Data)'}
+                            </span>
+                        </button>
+                    </div>
+                </div>
+             </aside>
+        ) : (
+            <div className="w-0 transition-all duration-300"></div>
+        )}
+      </main>
+    </div>
+  );
+};
+
+export default App;

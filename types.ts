@@ -20,6 +20,13 @@ export interface CelestialBody {
   analyzed: boolean;
 }
 
+export interface Constellation {
+  id: string;
+  name: string;
+  starIds: string[];
+  discoveredAt: number;
+}
+
 export interface GameResources {
   starlight: number; // Currency for upgrades
   data: number; // Currency for analysis
@@ -42,5 +49,5 @@ export interface LogEntry {
   id: string;
   timestamp: number;
   message: string;
-  type: 'info' | 'discovery' | 'upgrade' | 'warning';
+  type: 'info' | 'discovery' | 'upgrade' | 'warning' | 'constellation';
 }

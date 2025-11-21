@@ -86,3 +86,29 @@ export const analyzeCelestialBody = async (body: CelestialBody): Promise<string>
         return "Data corrupted. Unable to complete analysis.";
     }
 }
+
+export const generateConstellationName = async (starCount: number): Promise<string> => {
+    const systemInstruction = `
+        You are an ancient astronomer naming a newly discovered constellation.
+        Return ONLY a JSON object with a 'name' property.
+        The name should be mythical, mysterious, or scientific.
+        Examples: "The Weeping Willow", "Orion's Belt", "The Void Strider", "Cygnus Major".
+    `;
+    
+    try {
+         const response = await ai.models.generateContent({
+            model: CREATIVE_MODEL,
+            contents: `Generate a name for a constellation consisting of ${starCount} stars.`,
+            config: {
+                systemInstruction,
+                responseMimeType: "application/json",
+            }
+        });
+        const json = JSON.parse(response.text || "{}");
+        return json.name || `Cluster ${Math.floor(Math.random() * 9999)}`;
+    } catch (error) {
+        const prefixes = ["Alpha", "Beta", "Gamma", "Delta", "The Great", "The Lesser", "Northern", "Southern"];
+        const roots = ["Hydra", "Lion", "Crown", "Arrow", "Cross", "Bear", "Serpent", "Eagle"];
+        return `${prefixes[Math.floor(Math.random() * prefixes.length)]} ${roots[Math.floor(Math.random() * roots.length)]}`;
+    }
+}
