@@ -1,0 +1,5 @@
+{
+  "name": "Celestia: The Infinite Observatory",
+  "description": "An incremental star-mapping game where you explore a procedurally generated universe using the Gemini API.",
+  "requestFramePermissions": []
+}
